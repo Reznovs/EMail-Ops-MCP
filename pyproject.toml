@@ -1,0 +1,28 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "email-ops-mcp"
+version = "0.2.0"
+description = "EMail-Ops-MCP: structured stdio MCP server for schema-v2 mailbox setup, migration, inbox search, attachment download, and sending email."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+secure-storage = [
+  "keyring>=24",
+]
+
+[project.scripts]
+email-ops-mcp = "email_ops.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+.DS_Store
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+accounts.json
+*.local.json
+draft.txt
+attachments/
