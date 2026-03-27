@@ -32,6 +32,16 @@ from email_ops.infrastructure.config_store import (
 from email_ops.infrastructure.mail_transport import test_imap_login, test_smtp_login
 
 
+def _validate_account_name(name: str) -> str:
+    if any(sep in name for sep in ("/", "\\")):
+        raise EmailOpsError("account must not contain path separators", code="invalid_setup")
+    if name in {".", ".."} or ".." in name:
+        raise EmailOpsError("account must not contain path traversal segments", code="invalid_setup")
+    if name.startswith("."):
+        raise EmailOpsError("account must not start with a dot", code="invalid_setup")
+    return name
+
+
 def _server_from_raw(raw: Any, *, fallback: ServerConfig | None = None) -> ServerConfig | None:
     if not isinstance(raw, dict):
         return fallback
@@ -170,7 +180,7 @@ def setup_account_service(
     proxy_local_dns: bool = False,
     no_proxy: bool = False,
 ) -> dict[str, Any]:
-    name = account.strip()
+    name = _validate_account_name(account.strip())
     provider_name = provider.strip().lower()
     mailbox_email = email.strip()
     if not name:
@@ -192,8 +202,12 @@ def setup_account_service(
     preserve_defaults = bool(existing_raw) and not provider_changed and not email_changed
 
     preset = PROVIDER_PRESETS.get(provider_name, {})
-    base_imap = _server_from_raw(existing_servers.get("imap") if isinstance(existing_servers, dict) else None, fallback=preset.get("imap"))
-    base_smtp = _server_from_raw(existing_servers.get("smtp") if isinstance(existing_servers, dict) else None, fallback=preset.get("smtp"))
+    if preserve_defaults:
+        base_imap = _server_from_raw(existing_servers.get("imap") if isinstance(existing_servers, dict) else None, fallback=preset.get("imap"))
+        base_smtp = _server_from_raw(existing_servers.get("smtp") if isinstance(existing_servers, dict) else None, fallback=preset.get("smtp"))
+    else:
+        base_imap = preset.get("imap")
+        base_smtp = preset.get("smtp")
 
     final_auth_mode = (auth_mode or (existing_auth.get("mode") if preserve_defaults and isinstance(existing_auth, dict) else None) or preset.get("auth_mode") or "password").strip()
     final_login_user = (login_user or (existing_identity.get("login_user") if preserve_defaults and isinstance(existing_identity, dict) else None) or mailbox_email).strip()

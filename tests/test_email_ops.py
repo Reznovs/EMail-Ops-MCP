@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import unittest
+from email.message import EmailMessage
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import email_ops.interfaces.mcp_server as email_ops_mcp
+from email_ops.domain import AccountConfig, AuthConfig, EmailOpsError, IdentityConfig, ServerConfig
 from email_ops.application.account_service import doctor_config_service, migrate_config_service, setup_account_service
 from email_ops.application.message_service import send_email_service
 import email_ops.infrastructure.config_store as config_store
@@ -72,6 +75,7 @@ class EmailOpsTests(unittest.TestCase):
             self.assertIn("work", written["accounts"])
             self.assertEqual(written["accounts"]["work"]["identity"]["email"], "user@example.com")
             self.assertEqual(written["accounts"]["work"]["auth"]["storage"], "config_file")
+            self.assertEqual(os.stat(config_path).st_mode & 0o777, 0o600)
 
     def test_keyring_backed_account_update_stays_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,6 +125,41 @@ class EmailOpsTests(unittest.TestCase):
 
             written = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(written["accounts"]["work"]["servers"]["smtp"]["host"], "smtp.alt.example.com")
+
+    def test_setup_account_rejects_unsafe_account_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "accounts.json"
+            with self.assertRaises(EmailOpsError):
+                setup_account_service(
+                    account="../escape",
+                    provider="gmail",
+                    email="user@example.com",
+                    config_path=config_path,
+                    auth_secret="real-secret",
+                )
+
+    def test_setup_account_resets_provider_hosts_when_provider_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "accounts.json"
+            with mock.patch("email_ops.application.account_service.store_secret_secure", return_value=False):
+                setup_account_service(
+                    account="work",
+                    provider="gmail",
+                    email="user@example.com",
+                    config_path=config_path,
+                    auth_secret="secret1",
+                )
+                setup_account_service(
+                    account="work",
+                    provider="qq",
+                    email="user@example.com",
+                    config_path=config_path,
+                )
+
+            written = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["accounts"]["work"]["provider"], "qq")
+            self.assertEqual(written["accounts"]["work"]["servers"]["imap"]["host"], "imap.qq.com")
+            self.assertEqual(written["accounts"]["work"]["servers"]["smtp"]["host"], "smtp.qq.com")
 
     def test_migrate_config_creates_backup_and_v2_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -200,8 +239,11 @@ class EmailOpsTests(unittest.TestCase):
     def test_send_email_service_uses_v2_account_and_shared_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "accounts.json"
-            attachment_path = Path(tmpdir) / "note.txt"
+            attachment_dir = Path(tmpdir) / "approved"
+            attachment_dir.mkdir()
+            attachment_path = attachment_dir / "note.txt"
             attachment_path.write_text("hello", encoding="utf-8")
+            mail_transport._register_saved_attachments(attachment_dir, [attachment_path])
             with mock.patch("email_ops.application.account_service.store_secret_secure", return_value=False):
                 setup_account_service(
                     account="work",
@@ -250,6 +292,61 @@ class EmailOpsTests(unittest.TestCase):
             self.assertEqual(message["Subject"], "Status")
             self.assertEqual(message["To"], "a@example.com, b@example.com")
             self.assertEqual(len(list(message.iter_attachments())), 1)
+
+    def test_send_email_service_rejects_unapproved_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "accounts.json"
+            attachment_path = Path(tmpdir) / "note.txt"
+            attachment_path.write_text("hello", encoding="utf-8")
+            with mock.patch("email_ops.application.account_service.store_secret_secure", return_value=False):
+                setup_account_service(
+                    account="work",
+                    provider="gmail",
+                    email="user@example.com",
+                    config_path=config_path,
+                    display_name="User",
+                    auth_secret="real-secret",
+                )
+
+            with self.assertRaises(EmailOpsError):
+                send_email_service(
+                    account_name="work",
+                    to=["a@example.com"],
+                    subject="Status",
+                    body="Body text",
+                    config_path=config_path,
+                    attachments=[str(attachment_path)],
+                )
+
+    def test_build_download_dir_sanitizes_legacy_account_names(self) -> None:
+        account = AccountConfig(
+            name="../legacy",
+            provider="gmail",
+            identity=IdentityConfig(email="user@example.com", login_user="user@example.com", display_name="User"),
+            auth=AuthConfig(mode="password", storage="config_file", secret="secret"),
+            imap=ServerConfig(host="imap.gmail.com", port=993, security="ssl"),
+            smtp=ServerConfig(host="smtp.gmail.com", port=465, security="ssl"),
+        )
+
+        target = mail_transport.build_download_dir(account, "../uid", "archive")
+
+        self.assertTrue(target.is_absolute())
+        self.assertEqual(target.parent.name, str(mail_transport.date.today()))
+        self.assertTrue(target.name)
+        target.relative_to(mail_transport.archive_root().resolve())
+
+    def test_save_attachments_keeps_duplicate_names(self) -> None:
+        msg = EmailMessage()
+        msg.add_attachment(b"first", maintype="application", subtype="octet-stream", filename="report.pdf")
+        msg.add_attachment(b"second", maintype="application", subtype="octet-stream", filename="report.pdf")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = mail_transport.save_attachments(msg, Path(tmpdir))
+
+            self.assertEqual(len(saved), 2)
+            self.assertNotEqual(saved[0].name, saved[1].name)
+            self.assertEqual(saved[0].read_bytes(), b"first")
+            self.assertEqual(saved[1].read_bytes(), b"second")
 
     def test_search_messages_mcp_tool_delegates_to_service(self) -> None:
         expected = {"account": "work", "folder": "INBOX", "query": "hello", "messages": []}

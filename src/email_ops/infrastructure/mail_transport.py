@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import imaplib
+import json
 import os
 import re
 import smtplib
@@ -16,10 +17,12 @@ from email.message import EmailMessage, Message
 from pathlib import Path
 from typing import Any
 
-from email_ops.domain import AccountConfig, ProxyConfig
+from email_ops.domain import AccountConfig, EmailOpsError, ProxyConfig
 
 
 CONNECT_TIMEOUT = float(os.environ.get("CODEX_MAIL_CONNECT_TIMEOUT", "15"))
+APPROVED_ATTACHMENTS_FILE = ".codex-mail-attachments.json"
+TEMP_DOWNLOAD_PREFIX = "codex-mail-"
 
 
 def decode_mime_header(raw: str | None) -> str:
@@ -101,16 +104,79 @@ def safe_filename(name: str, fallback: str, max_length: int = 255) -> str:
     return cleaned or fallback
 
 
+def _attachment_manifest_path(target_dir: Path) -> Path:
+    return target_dir / APPROVED_ATTACHMENTS_FILE
+
+
+def _unique_attachment_name(target_dir: Path, filename: str, used_names: set[str]) -> str:
+    candidate = filename
+    stem = Path(filename).stem or "attachment"
+    suffix = Path(filename).suffix
+    counter = 2
+    while candidate in used_names or (target_dir / candidate).exists():
+        candidate = f"{stem}-{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def _register_saved_attachments(target_dir: Path, saved: list[Path]) -> None:
+    manifest = _attachment_manifest_path(target_dir)
+    payload = {
+        "version": 1,
+        "approved_files": sorted(item.name for item in saved),
+    }
+    manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest.chmod(0o600)
+
+
+def _load_approved_attachment_names(target_dir: Path) -> set[str]:
+    manifest = _attachment_manifest_path(target_dir)
+    if not manifest.is_file():
+        raise EmailOpsError("attachment is not in an approved download directory", code="invalid_request")
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise EmailOpsError("attachment approval manifest is invalid", code="invalid_request") from exc
+    approved = payload.get("approved_files")
+    if not isinstance(approved, list) or not all(isinstance(item, str) and item for item in approved):
+        raise EmailOpsError("attachment approval manifest is invalid", code="invalid_request")
+    return set(approved)
+
+
+def _validate_send_attachment(path_value: str) -> Path:
+    candidate = Path(path_value).expanduser()
+    if candidate.is_symlink():
+        raise EmailOpsError(f"attachment is not an approved file: {candidate}", code="invalid_request")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise EmailOpsError(f"attachment not found: {candidate}", code="invalid_request") from exc
+    if not resolved.is_file():
+        raise EmailOpsError(f"attachment is not a file: {candidate}", code="invalid_request")
+    parent = resolved.parent
+    approved = _load_approved_attachment_names(parent)
+    try:
+        resolved.relative_to(parent.resolve())
+    except ValueError as exc:
+        raise EmailOpsError(f"attachment is outside approved directory: {candidate}", code="invalid_request") from exc
+    if resolved.name not in approved:
+        raise EmailOpsError(f"attachment is not approved for sending: {candidate}", code="invalid_request")
+    return resolved
+
+
 def save_attachments(msg: Message, target_dir: Path) -> list[Path]:
     saved: list[Path] = []
     target_dir.mkdir(parents=True, exist_ok=True)
     target_dir.chmod(0o700)
+    used_names: set[str] = set()
     for index, part in enumerate(msg.walk(), start=1):
         filename = part.get_filename()
         if not filename:
             continue
         decoded = decode_mime_header(filename) or f"attachment-{index}"
         final_name = safe_filename(decoded, f"attachment-{index}")
+        final_name = _unique_attachment_name(target_dir, final_name, used_names)
         payload = part.get_payload(decode=True)
         if payload is None:
             continue
@@ -122,6 +188,7 @@ def save_attachments(msg: Message, target_dir: Path) -> list[Path]:
         path.write_bytes(payload)
         path.chmod(0o600)
         saved.append(path)
+    _register_saved_attachments(target_dir, saved)
     return saved
 
 
@@ -403,9 +470,17 @@ def archive_root() -> Path:
 
 def build_download_dir(account: AccountConfig, uid: str, mode: str) -> Path:
     if mode == "temp":
-        return Path(tempfile.mkdtemp(prefix="codex-mail-"))
+        return Path(tempfile.mkdtemp(prefix=TEMP_DOWNLOAD_PREFIX))
     stamp = date.today().isoformat()
-    return archive_root() / account.name / stamp / uid
+    root = archive_root().resolve()
+    account_dir = safe_filename(account.name, "account")
+    uid_dir = safe_filename(uid, "message")
+    target = (root / account_dir / stamp / uid_dir).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise EmailOpsError("archive path escaped the attachment root", code="invalid_request") from exc
+    return target
 
 
 def list_message_attachments(msg: Message) -> list[dict[str, Any]]:
@@ -464,7 +539,7 @@ def send_email(account: AccountConfig, *, to: str | list[str], subject: str, bod
 
     attached_files: list[str] = []
     for attachment in attachments or []:
-        path = Path(attachment)
+        path = _validate_send_attachment(attachment)
         data = path.read_bytes()
         msg.add_attachment(
             data,

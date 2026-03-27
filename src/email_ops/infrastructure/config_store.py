@@ -128,7 +128,12 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_config(data), encoding="utf-8")
+    temp_path = path.with_name(f".{path.name}.tmp")
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        os.chmod(temp_path, 0o600)
+        handle.write(render_config(data))
+    os.replace(temp_path, path)
+    os.chmod(path, 0o600)
 
 
 def _blank_v2() -> dict[str, Any]:
