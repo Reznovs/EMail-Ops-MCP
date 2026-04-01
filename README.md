@@ -1,128 +1,83 @@
 # Email Client Skill
 
-A standalone publishable skill project for mailbox setup, migration, inbox lookup, attachment download, draft generation, and sending email across Gmail, QQ, or custom IMAP/SMTP accounts.
+支持 Claude Code、OpenAI Codex 的邮件处理工具。可配置邮箱账号、读取邮件、下载附件、起草和发送邮件。
 
-**支持平台**: Claude Code, OpenAI Codex, 以及其他兼容的 AI 助手
+## 支持邮箱
 
-## Layout
+| 类型 | 服务商 |
+|------|--------|
+| 预设 | Gmail, QQ |
+| 自定义 | 任意 IMAP/SMTP |
 
-```text
-email-client-skill/
-├── README.md
-├── SKILL.md
-├── agents/                 # AI 平台适配配置
-│   ├── claude.yaml        # Claude Code 配置
-│   ├── codex.yaml         # OpenAI Codex 配置
-│   └── openai.yaml        # OpenAI 通用配置
-├── references/            # 参考文档
-├── scripts/               # 本地工具脚本
-└── tests/                 # 测试
+## 快速开始
+
+### 1. 安装
+
+```bash
+git clone https://github.com/Reznovs/EMail-Client-Skill.git ~/.codex/skills/user/email-client-skill
 ```
+
+### 2. 配置账号
+
+```bash
+python3 scripts/mail_tools.py setup_account \
+  --input-json '{
+    "account": "默认账号",
+    "provider": "qq",
+    "email": "你的邮箱@qq.com",
+    "auth_secret": "授权码"
+  }'
+```
+
+配置保存至 `~/.config/codex-mail/accounts.json`
+
+### 3. 使用
+
+```bash
+# 发送邮件
+python3 scripts/mail_tools.py send_email \
+  --input-json '{
+    "account": "默认账号",
+    "to": "收件人@qq.com",
+    "subject": "主题",
+    "body": "正文"
+  }'
+
+# 查看最新邮件
+python3 scripts/mail_tools.py list_messages \
+  --input-json '{"account": "默认账号", "limit": 10}'
+
+# 搜索邮件
+python3 scripts/mail_tools.py search_messages \
+  --input-json '{"account": "默认账号", "query": "关键词"}'
+```
+
+## 全部命令
+
+| 命令 | 用途 |
+|------|------|
+| `doctor_account` | 检查配置 |
+| `test_login` | 测试登录 |
+| `setup_account` | 配置账号 |
+| `list_messages` | 列出邮件 |
+| `search_messages` | 搜索邮件 |
+| `get_message` | 读取邮件详情 |
+| `download_attachments` | 下载附件 |
+| `draft_email` | 生成邮件草稿 |
+| `send_email` | 发送邮件 |
 
 ## AI 平台适配
 
-本 skill 已适配以下 AI 平台：
+已配置 Claude Code 和 OpenAI Codex 的适配文件，位于 `agents/` 目录。
 
-| 平台 | 配置文件 | 状态 |
-|------|---------|------|
-| Claude Code | `agents/claude.yaml` | ✅ 已验证 |
-| OpenAI Codex | `agents/codex.yaml` | ✅ 已验证 |
-| OpenAI | `agents/openai.yaml` | ✅ 已配置 |
+## 目录说明
 
-### 在 Claude Code 中使用
-
-```bash
-# 测试账号配置
-python3 scripts/mail_tools.py doctor_account --input-json '{}'
-
-# 测试登录
-python3 scripts/mail_tools.py test_login --input-json '{"account":"default-send"}'
-
-# 列出邮件
-python3 scripts/mail_tools.py list_messages --input-json '{"account":"default-send","limit":10}'
-
-# 生成草稿
-python3 scripts/mail_tools.py draft_email --input-json '{"subject":"主题","body":"内容"}'
-
-# 发送邮件
-python3 scripts/mail_tools.py send_email --input-json '{"account":"default-send","to":"recipient@example.com","subject":"主题","body":"内容"}'
 ```
-
-## Supported Provider Boundary
-
-- `gmail`
-- `qq`
-- `custom`
-
-This project does not claim built-in presets for `outlook`, `163`, or other providers.
-
-## Local Tool Call
-
-Machine-facing entrypoint:
-
-```bash
-python3 scripts/mail_tools.py setup_account --input-json '{"account":"work","provider":"gmail","email":"user@example.com"}'
-```
-
-Other tool names:
-
-- `migrate_config`
-- `setup_account`
-- `doctor_account`
-- `test_login`
-- `list_messages`
-- `search_messages`
-- `get_message`
-- `download_attachments`
-- `send_email`
-- `draft_email`
-
-## CLI Usage
-
-Human-facing entrypoint:
-
-```bash
-python3 scripts/mail_client.py setup_account --account work --provider gmail --email user@example.com
-python3 scripts/mail_client.py list_messages --account work --limit 10
-python3 scripts/mail_client.py draft_email --subject "Project update" --body "The work is on track."
-```
-
-Unix wrapper:
-
-```bash
-./scripts/mail_client.sh list_messages --account work --limit 10
-```
-
-## Config
-
-Default config path:
-
-```text
-~/.config/codex-mail/accounts.json
-```
-
-Override with:
-
-```bash
-export CODEX_MAIL_ACCOUNTS=/custom/path/accounts.json
-```
-
-The active writable schema is `v2`.
-
-## Testing
-
-运行测试确认各功能正常：
-
-```bash
-# 检查账号配置
-python3 scripts/mail_tools.py doctor_account --input-json '{}'
-
-# 测试登录
-python3 scripts/mail_tools.py test_login --input-json '{"account":"your-account"}'
-
-# 列出邮件
-python3 scripts/mail_tools.py list_messages --input-json '{"account":"your-account","limit":5}'
-
-# Python 单元测试
-python3 -m pytest tests/test_mail_tools.py -v
+email-client-skill/
+├── agents/           # AI 平台配置
+├── references/       # 详细文档
+├── scripts/          # 核心脚本
+│   ├── mail_tools.py    # 机器接口
+│   └── mail_client.py   # 人工接口
+└── tests/            # 测试
 ```
